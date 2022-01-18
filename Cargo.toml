@@ -66,6 +66,7 @@ members = [
     "drv/stm32h7-usart",
     "drv/stm32h7-i2c-server",
     "drv/stm32h7-qspi",
+    "drv/stm32h7-hash",
 
     "drv/lpc55-romapi",
     "drv/lpc55-syscon",
@@ -85,6 +86,8 @@ members = [
     "drv/gimlet-seq-server",
     "drv/gimlet-hf-server",
     "drv/gimlet-hf-api",
+    "drv/hash-api",
+    "drv/stm32h7-hash-server",
 
     "drv/sidecar-seq-server",
 

@@ -16,17 +16,20 @@ use drv_stm32h7_qspi::Qspi;
 use drv_stm32xx_sys_api as sys_api;
 use idol_runtime::{ClientError, Leased, LenLimit, RequestError, R, W};
 
-// Note: h7b3 has QUADSPI but has not been used in this project.
-
 #[cfg(feature = "h743")]
 use stm32h7::stm32h743 as device;
 
 #[cfg(feature = "h753")]
 use stm32h7::stm32h753 as device;
 
+#[cfg(feature = "hash")]
+use drv_hash_api as hash_api;
+
 use drv_gimlet_hf_api::{HfError, HfMuxState};
 
 task_slot!(SYS, sys);
+#[cfg(feature = "hash")]
+task_slot!(HASH, hash_driver);
 
 const QSPI_IRQ: u32 = 1;
 
@@ -163,21 +166,21 @@ fn main() -> ! {
             sys.gpio_configure_alternate(
                 sys_api::Port::F.pin(6).and_pin(7).and_pin(10),
                 sys_api::OutputType::PushPull,
-                sys_api::Speed::VeryHigh,
+                sys_api::Speed::Low,
                 sys_api::Pull::None,
                 sys_api::Alternate::AF9,
             ).unwrap();
             sys.gpio_configure_alternate(
                 sys_api::Port::F.pin(8).and_pin(9),
                 sys_api::OutputType::PushPull,
-                sys_api::Speed::VeryHigh,
+                sys_api::Speed::Low,
                 sys_api::Pull::None,
                 sys_api::Alternate::AF10,
             ).unwrap();
             sys.gpio_configure_alternate(
                 sys_api::Port::B.pin(6),
                 sys_api::OutputType::PushPull,
-                sys_api::Speed::VeryHigh,
+                sys_api::Speed::Low,
                 sys_api::Pull::None,
                 sys_api::Alternate::AF10,
             ).unwrap();
@@ -188,7 +191,7 @@ fn main() -> ! {
             sys.gpio_configure_output(
                 sys_api::Port::F.pin(4).and_pin(5),
                 sys_api::OutputType::PushPull,
-                sys_api::Speed::High,
+                sys_api::Speed::Low,
                 sys_api::Pull::None,
             ).unwrap();
             let select_pin = sys_api::Port::F.pin(4);
@@ -237,28 +240,28 @@ fn main() -> ! {
             sys.gpio_configure_alternate(
                 sys_api::Port::B.pin(2),
                 sys_api::OutputType::PushPull,
-                sys_api::Speed::VeryHigh,
+                sys_api::Speed::Low,
                 sys_api::Pull::None,
                 sys_api::Alternate::AF9,
             ).unwrap();
             sys.gpio_configure_alternate(
                 sys_api::Port::D.pin(11).and_pin(12).and_pin(13),
                 sys_api::OutputType::PushPull,
-                sys_api::Speed::VeryHigh,
+                sys_api::Speed::Low,
                 sys_api::Pull::None,
                 sys_api::Alternate::AF9,
             ).unwrap();
             sys.gpio_configure_alternate(
                 sys_api::Port::E.pin(2),
                 sys_api::OutputType::PushPull,
-                sys_api::Speed::VeryHigh,
+                sys_api::Speed::Low,
                 sys_api::Pull::None,
                 sys_api::Alternate::AF9,
             ).unwrap();
             sys.gpio_configure_alternate(
                 sys_api::Port::G.pin(6),
                 sys_api::OutputType::PushPull,
-                sys_api::Speed::VeryHigh,
+                sys_api::Speed::Low,
                 sys_api::Pull::None,
                 sys_api::Alternate::AF10,
             ).unwrap();
@@ -269,7 +272,7 @@ fn main() -> ! {
             sys.gpio_configure_output(
                 sys_api::Port::F.pin(4).and_pin(5),
                 sys_api::OutputType::PushPull,
-                sys_api::Speed::High,
+                sys_api::Speed::Low,
                 sys_api::Pull::None,
             ).unwrap();
 
@@ -417,6 +420,54 @@ impl idl::InOrderHostFlashImpl for ServerImpl {
             Ok(_) => {
                 self.mux_state = state;
                 Ok(())
+            }
+        }
+    }
+
+    cfg_if::cfg_if! {
+        if #[cfg(feature = "hash")] {
+            fn hash(
+                &mut self,
+                _: &RecvMessage,
+                addr: u32,
+                len: u32,
+            ) -> Result<[u8; 32], RequestError<HfError>> {
+                let hash_driver = hash_api::Hash::from(HASH.get_task_id());
+                if let Err(_) = hash_driver.init_sha256() {
+                    return Err(HfError::HashError.into());
+                }
+                let begin = addr as usize;
+                let end = begin + len as usize;
+                // Check end > maximum 4-byte address.
+                if end > u32::MAX as usize {
+                    return Err(HfError::HashBadRange.into());
+                }
+                // If we knew the flash part size, we'd check against those limits.
+                for addr in (begin..end).step_by(self.block.len()) {
+                    let size = if self.block.len() < (end - addr) {
+                        self.block.len()
+                    } else {
+                        end - addr
+                    };
+                    self.qspi.read_memory(addr as u32, &mut self.block[..size]);
+                    if let Err(_) = hash_driver.update(
+                        size as u32, &self.block[..size]) {
+                        return Err(HfError::HashError.into());
+                    }
+                }
+                match hash_driver.finalize_sha256() {
+                    Ok(sum) => Ok(sum),
+                    Err(_) => Err(HfError::HashError.into()),   // XXX losing info
+                }
+            }
+        } else {
+            fn hash(
+                &mut self,
+                _: &RecvMessage,
+                _addr: u32,
+                _len: u32,
+            ) -> Result<[u8; 32], RequestError<HfError>> {
+                Err(HfError::HashNotConfigured.into())
             }
         }
     }
